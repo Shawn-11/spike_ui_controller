@@ -337,6 +337,25 @@ async function sendCommand(motorId, action){
   }
 }
 
+// Sends stop for E, F, C, D together in ONE BLE write so they land in the
+// same packet and get processed in the same hub loop tick — this avoids
+// the small stagger you get from four separate awaited GATT writes.
+async function sendStopAll(){
+  if(!characteristic) return;
+  const payload = new Uint8Array([
+    0x06,
+    'E'.charCodeAt(0), 'S'.charCodeAt(0),
+    'F'.charCodeAt(0), 'S'.charCodeAt(0),
+    'C'.charCodeAt(0), 'S'.charCodeAt(0),
+    'D'.charCodeAt(0), 'S'.charCodeAt(0)
+  ]);
+  try{
+    await characteristic.writeValueWithResponse(payload);
+  } catch(err){
+    logLine('Write failed: ' + err.message, true);
+  }
+}
+
 function bindHold(el, motorId, action){
   let interval = null;
   const start = (e) => {
@@ -349,7 +368,7 @@ function bindHold(el, motorId, action){
   };
   const stop = () => {
     if(interval){ clearInterval(interval); interval = null; }
-    if(characteristic) sendCommand(motorId, 'S');
+    if(characteristic) sendStopAll();
     el.classList.remove('active');
     holds.delete(el);
   };
