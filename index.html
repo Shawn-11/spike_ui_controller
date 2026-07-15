@@ -79,6 +79,30 @@
   .cell.lit.low{ background: var(--red); border-color: var(--red); }
   #battPct{ font-size: 10px; color: var(--dim); min-width: 26px; }
 
+  .speed-row{ display:flex; align-items:center; gap:8px; margin-top:6px; }
+  .speed-label{
+    font-family:'Space Mono', monospace; font-size: 10px; color: var(--dim);
+    letter-spacing: 1.5px; flex-shrink:0;
+  }
+  #speedSlider{ flex:1; accent-color: var(--cyan); height:18px; }
+  #speedNumber{
+    width: 44px; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 6px; font-family:'Space Mono', monospace;
+    font-size: 12px; padding: 3px 2px; text-align:center;
+  }
+  #speedNumber::-webkit-inner-spin-button{ opacity: 0.6; }
+  .speed-pct{ font-size: 11px; color: var(--dim); flex-shrink:0; }
+
+  #estopBtn{
+    flex-shrink:0; margin: 8px 10px 0; padding: 10px;
+    border-radius: 10px; border: 2px solid var(--red);
+    background: rgba(255,92,92,0.12); color: var(--red);
+    font-family:'Space Mono', monospace; font-weight:800;
+    letter-spacing: 3px; font-size: 14px; cursor:pointer; text-align:center;
+    transition: background 0.06s, transform 0.06s;
+  }
+  #estopBtn:active{ background: var(--red); color:#1a0000; transform: scale(0.98); }
+
   main{
     flex:1; min-height:0; padding: 8px 10px 4px; display:flex; flex-direction:column; gap:8px;
   }
@@ -186,7 +210,15 @@
       <div id="battPct">--%</div>
     </div>
   </div>
+  <div class="speed-row">
+    <span class="speed-label">SPEED</span>
+    <input type="range" id="speedSlider" min="0" max="100" value="100">
+    <input type="number" id="speedNumber" min="0" max="100" value="100">
+    <span class="speed-pct">%</span>
+  </div>
 </header>
+
+<button id="estopBtn">⛔ EMERGENCY STOP</button>
 
 <main>
   <div id="armsSection">
@@ -322,6 +354,7 @@ async function connect(){
     document.getElementById('connectBtn').textContent = 'Connected';
     document.getElementById('connectBtn').classList.add('connected');
     logLine('BLE link up');
+    sendSpeed(clampSpeed(document.getElementById('speedSlider').value));
   } catch(err){
     logLine('Connect failed: ' + err.message, true);
   }
@@ -349,6 +382,18 @@ async function sendStopAll(){
     'C'.charCodeAt(0), 'S'.charCodeAt(0),
     'D'.charCodeAt(0), 'S'.charCodeAt(0)
   ]);
+  try{
+    await characteristic.writeValueWithResponse(payload);
+  } catch(err){
+    logLine('Write failed: ' + err.message, true);
+  }
+}
+
+// Sends the current speed as a percentage (0-100) of each motor's base
+// speed. Second byte is the raw percent value, not an ASCII character.
+async function sendSpeed(percent){
+  if(!characteristic) return;
+  const payload = new Uint8Array([0x06, 'V'.charCodeAt(0), percent]);
   try{
     await characteristic.writeValueWithResponse(payload);
   } catch(err){
@@ -386,6 +431,52 @@ document.querySelectorAll('.pad').forEach(pad => {
   });
 });
 
+// ---- Speed slider + typeable number, kept in sync both ways ----
+const speedSlider = document.getElementById('speedSlider');
+const speedNumber = document.getElementById('speedNumber');
+let lastSpeedSend = 0;
+
+function syncSpeedUI(value){
+  speedSlider.value = value;
+  speedNumber.value = value;
+}
+
+function clampSpeed(value){
+  const n = Math.round(Number(value));
+  if(isNaN(n)) return 100;
+  return Math.max(0, Math.min(100, n));
+}
+
+// Live drag: sync the UI instantly but throttle actual BLE writes so
+// dragging doesn't flood the link with writes.
+speedSlider.addEventListener('input', () => {
+  const value = clampSpeed(speedSlider.value);
+  syncSpeedUI(value);
+  const now = Date.now();
+  if(now - lastSpeedSend < 120) return;
+  lastSpeedSend = now;
+  sendSpeed(value);
+});
+// Always send the final value once the slider is released, in case the
+// throttle above skipped it.
+speedSlider.addEventListener('change', () => {
+  const value = clampSpeed(speedSlider.value);
+  syncSpeedUI(value);
+  sendSpeed(value);
+});
+speedNumber.addEventListener('change', () => {
+  const value = clampSpeed(speedNumber.value);
+  syncSpeedUI(value);
+  sendSpeed(value);
+});
+
+// ---- Emergency stop: release any held buttons AND force a stop-all ----
+document.getElementById('estopBtn').addEventListener('click', () => {
+  Array.from(holds.values()).forEach(stopFn => stopFn());
+  sendStopAll();
+  logLine('EMERGENCY STOP', true);
+});
+
 // Safety net: if the tab is backgrounded mid-hold, stop everything.
 document.addEventListener('visibilitychange', () => {
   if(document.hidden){
@@ -394,6 +485,12 @@ document.addEventListener('visibilitychange', () => {
 });
 
 document.getElementById('connectBtn').addEventListener('click', () => {
+  if(device && device.gatt && device.gatt.connected){
+    if(confirm('Disconnect from the hub?')){
+      device.gatt.disconnect(); // fires gattserverdisconnected -> onDisconnected()
+    }
+    return;
+  }
   if(!navigator.bluetooth){
     logLine('Web Bluetooth unsupported — use Chrome/Edge (Android) or Bluefy (iOS)', true);
     return;
